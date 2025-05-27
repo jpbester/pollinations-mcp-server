@@ -93,210 +93,174 @@ class PollinationsClient {
 
 const pollinations = new PollinationsClient();
 
-// MCP Protocol Handler
-class MCPHandler {
-  constructor(connectionId, res) {
-    this.connectionId = connectionId;
-    this.res = res;
-    this.tools = [
-      {
-        name: 'generate_image',
-        description: 'Generate an image from a text prompt using Pollinations AI',
-        inputSchema: {
-          type: 'object',
-          properties: {
-            prompt: {
-              type: 'string',
-              description: 'Text description of the image to generate'
-            },
-            width: {
-              type: 'number',
-              description: 'Image width in pixels (default: 1024)',
-              default: 1024
-            },
-            height: {
-              type: 'number', 
-              description: 'Image height in pixels (default: 1024)',
-              default: 1024
-            },
-            model: {
-              type: 'string',
-              description: 'Image generation model to use',
-              enum: ['flux', 'turbo', 'flux-realism', 'flux-cablyai', 'any-dark'],
-              default: 'flux'
-            },
-            seed: {
-              type: 'number',
-              description: 'Random seed for reproducible results (optional)'
-            }
-          },
-          required: ['prompt']
+// MCP Tools Definition
+const MCP_TOOLS = [
+  {
+    name: 'generate_image',
+    description: 'Generate an image from a text prompt using Pollinations AI',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        prompt: {
+          type: 'string',
+          description: 'Text description of the image to generate'
+        },
+        width: {
+          type: 'number',
+          description: 'Image width in pixels (default: 1024)',
+          default: 1024
+        },
+        height: {
+          type: 'number', 
+          description: 'Image height in pixels (default: 1024)',
+          default: 1024
+        },
+        model: {
+          type: 'string',
+          description: 'Image generation model to use',
+          enum: ['flux', 'turbo', 'flux-realism', 'flux-cablyai', 'any-dark'],
+          default: 'flux'
+        },
+        seed: {
+          type: 'number',
+          description: 'Random seed for reproducible results (optional)'
         }
       },
-      {
-        name: 'generate_text',
-        description: 'Generate text content using Pollinations AI language models',
-        inputSchema: {
-          type: 'object',
-          properties: {
-            prompt: {
-              type: 'string',
-              description: 'Text prompt for content generation'
-            },
-            model: {
-              type: 'string',
-              description: 'Language model to use for generation',
-              enum: ['openai', 'mistral', 'claude', 'llama', 'gemini'],
-              default: 'openai'
-            }
-          },
-          required: ['prompt']
+      required: ['prompt']
+    }
+  },
+  {
+    name: 'generate_text',
+    description: 'Generate text content using Pollinations AI language models',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        prompt: {
+          type: 'string',
+          description: 'Text prompt for content generation'
+        },
+        model: {
+          type: 'string',
+          description: 'Language model to use for generation',
+          enum: ['openai', 'mistral', 'claude', 'llama', 'gemini'],
+          default: 'openai'
         }
       },
-      {
-        name: 'list_models',
-        description: 'List all available models for image and text generation',
-        inputSchema: {
-          type: 'object',
-          properties: {},
-          required: []
+      required: ['prompt']
+    }
+  },
+  {
+    name: 'list_models',
+    description: 'List all available models for image and text generation',
+    inputSchema: {
+      type: 'object',
+      properties: {},
+      required: []
+    }
+  }
+];
+
+// MCP Message Handler
+async function handleMCPMessage(message) {
+  const { id, method, params } = message;
+  
+  console.log(`Processing MCP method: ${method}`);
+
+  switch (method) {
+    case 'initialize':
+      return {
+        jsonrpc: '2.0',
+        id,
+        result: {
+          protocolVersion: '2024-11-05',
+          capabilities: {
+            tools: { listChanged: true },
+            resources: {},
+            prompts: {}
+          },
+          serverInfo: {
+            name: 'pollinations-mcp-server',
+            version: '1.0.0'
+          }
         }
-      }
-    ];
-  }
+      };
 
-  async handleMessage(message) {
-    try {
-      console.log(`Received MCP message (${this.connectionId}):`, JSON.stringify(message, null, 2));
+    case 'notifications/initialized':
+      // No response needed for notifications
+      return null;
 
-      const response = await this.processMessage(message);
-      this.sendMessage(response);
-    } catch (error) {
-      console.error(`Error handling MCP message (${this.connectionId}):`, error);
-      this.sendError(message.id, -32603, 'Internal error', error.message);
-    }
-  }
+    case 'tools/list':
+      return {
+        jsonrpc: '2.0',
+        id,
+        result: {
+          tools: MCP_TOOLS
+        }
+      };
 
-  async processMessage(message) {
-    const { id, method, params } = message;
-
-    switch (method) {
-      case 'initialize':
-        return {
-          jsonrpc: '2.0',
-          id,
-          result: {
-            protocolVersion: '2024-11-05',
-            capabilities: {
-              tools: { listChanged: true },
-              resources: {},
-              prompts: {}
-            },
-            serverInfo: {
-              name: 'pollinations-mcp-server',
-              version: '1.0.0'
+    case 'tools/call':
+      const toolResult = await callTool(params.name, params.arguments || {});
+      return {
+        jsonrpc: '2.0',
+        id,
+        result: {
+          content: [
+            {
+              type: 'text',
+              text: JSON.stringify(toolResult, null, 2)
             }
-          }
-        };
+          ]
+        }
+      };
 
-      case 'notifications/initialized':
-        // No response needed for notifications
-        return null;
-
-      case 'tools/list':
-        return {
-          jsonrpc: '2.0',
-          id,
-          result: {
-            tools: this.tools
-          }
-        };
-
-      case 'tools/call':
-        const toolResult = await this.callTool(params.name, params.arguments || {});
-        return {
-          jsonrpc: '2.0',
-          id,
-          result: {
-            content: [
-              {
-                type: 'text',
-                text: JSON.stringify(toolResult, null, 2)
-              }
-            ]
-          }
-        };
-
-      default:
-        throw new Error(`Unsupported method: ${method}`);
-    }
+    default:
+      throw new Error(`Unsupported method: ${method}`);
   }
+}
 
-  async callTool(toolName, args) {
-    console.log(`Calling tool: ${toolName} with args:`, args);
+async function callTool(toolName, args) {
+  console.log(`Calling tool: ${toolName}`);
 
-    switch (toolName) {
-      case 'generate_image':
-        const imageResult = await pollinations.generateImage(args.prompt, {
-          width: args.width,
-          height: args.height,
+  switch (toolName) {
+    case 'generate_image':
+      const imageResult = await pollinations.generateImage(args.prompt, {
+        width: args.width,
+        height: args.height,
+        model: args.model,
+        seed: args.seed
+      });
+      return {
+        tool: 'generate_image',
+        result: imageResult,
+        metadata: {
+          prompt: args.prompt,
+          timestamp: new Date().toISOString()
+        }
+      };
+
+    case 'generate_text':
+      const textResult = await pollinations.generateText(args.prompt, args.model);
+      return {
+        tool: 'generate_text',
+        result: textResult,
+        metadata: {
+          prompt: args.prompt,
           model: args.model,
-          seed: args.seed
-        });
-        return {
-          tool: 'generate_image',
-          result: imageResult,
-          metadata: {
-            prompt: args.prompt,
-            timestamp: new Date().toISOString()
-          }
-        };
+          timestamp: new Date().toISOString()
+        }
+      };
 
-      case 'generate_text':
-        const textResult = await pollinations.generateText(args.prompt, args.model);
-        return {
-          tool: 'generate_text',
-          result: textResult,
-          metadata: {
-            prompt: args.prompt,
-            model: args.model,
-            timestamp: new Date().toISOString()
-          }
-        };
+    case 'list_models':
+      return {
+        tool: 'list_models',
+        result: pollinations.getAvailableModels(),
+        metadata: {
+          timestamp: new Date().toISOString()
+        }
+      };
 
-      case 'list_models':
-        return {
-          tool: 'list_models',
-          result: pollinations.getAvailableModels(),
-          metadata: {
-            timestamp: new Date().toISOString()
-          }
-        };
-
-      default:
-        throw new Error(`Unknown tool: ${toolName}`);
-    }
-  }
-
-  sendMessage(message) {
-    if (message) {
-      const data = `data: ${JSON.stringify(message)}\n\n`;
-      this.res.write(data);
-      console.log(`Sent MCP response (${this.connectionId})`);
-    }
-  }
-
-  sendError(id, code, message, data = null) {
-    const errorResponse = {
-      jsonrpc: '2.0',
-      id,
-      error: {
-        code,
-        message,
-        ...(data && { data })
-      }
-    };
-    this.sendMessage(errorResponse);
+    default:
+      throw new Error(`Unknown tool: ${toolName}`);
   }
 }
 
@@ -329,42 +293,61 @@ app.get('/health', (req, res) => {
   });
 });
 
-// Main SSE endpoint for MCP protocol
+// Fixed SSE endpoint for n8n MCP Client
 app.get('/sse', (req, res) => {
-  console.log('New SSE connection request');
+  console.log('SSE connection requested from:', req.ip);
   
-  // Set SSE headers
+  // Set proper SSE headers
   res.writeHead(200, {
     'Content-Type': 'text/event-stream',
     'Cache-Control': 'no-cache',
     'Connection': 'keep-alive',
     'Access-Control-Allow-Origin': '*',
-    'Access-Control-Allow-Headers': 'Cache-Control, Authorization'
+    'Access-Control-Allow-Headers': 'Cache-Control, Authorization',
+    'X-Accel-Buffering': 'no' // Disable nginx buffering
   });
 
-  const connectionId = Date.now().toString();
+  const connectionId = `sse-${Date.now()}`;
   console.log(`SSE connection established: ${connectionId}`);
 
-  // Create MCP handler for this connection
-  const mcpHandler = new MCPHandler(connectionId, res);
-  activeConnections.set(connectionId, { res, mcpHandler });
+  // Store connection
+  activeConnections.set(connectionId, { res, connectionId });
 
-  // Send initial connection event
-  res.write(`data: ${JSON.stringify({
-    type: 'connection',
-    connectionId,
-    message: 'Connected to Pollinations MCP Server',
-    serverInfo: {
-      name: 'pollinations-mcp-server',
-      version: '1.0.0',
-      capabilities: ['image_generation', 'text_generation', 'model_listing']
+  // Send initial handshake - this is crucial for n8n
+  const initMessage = {
+    jsonrpc: '2.0',
+    method: 'notifications/initialized',
+    params: {
+      serverInfo: {
+        name: 'pollinations-mcp-server',
+        version: '1.0.0'
+      }
     }
-  })}\n\n`);
+  };
+  
+  res.write(`data: ${JSON.stringify(initMessage)}\n\n`);
+  
+  // Send tools list immediately after connection
+  const toolsMessage = {
+    jsonrpc: '2.0',
+    id: 'initial-tools',
+    result: {
+      tools: MCP_TOOLS
+    }
+  };
+  
+  res.write(`data: ${JSON.stringify(toolsMessage)}\n\n`);
+  
+  console.log(`Initial messages sent to ${connectionId}`);
 
-  // Keep connection alive
+  // Keep connection alive with shorter intervals
   const keepAlive = setInterval(() => {
-    res.write(`: keepalive ${Date.now()}\n\n`);
-  }, 30000);
+    if (!res.destroyed) {
+      res.write(`: keepalive ${Date.now()}\n\n`);
+    } else {
+      clearInterval(keepAlive);
+    }
+  }, 15000); // 15 seconds instead of 30
 
   // Handle client disconnect
   req.on('close', () => {
@@ -378,31 +361,113 @@ app.get('/sse', (req, res) => {
     clearInterval(keepAlive);
     activeConnections.delete(connectionId);
   });
+
+  // Handle response errors
+  res.on('error', (error) => {
+    console.error(`SSE response error (${connectionId}):`, error);
+    clearInterval(keepAlive);
+    activeConnections.delete(connectionId);
+  });
 });
 
-// Endpoint to send MCP messages
+// Handle MCP messages via POST (for tools that send messages back)
+app.post('/sse', async (req, res) => {
+  try {
+    const message = req.body;
+    console.log('Received MCP POST message:', JSON.stringify(message, null, 2));
+    
+    const response = await handleMCPMessage(message);
+    
+    if (response) {
+      // Send response to all active SSE connections
+      for (const [connectionId, connection] of activeConnections) {
+        if (!connection.res.destroyed) {
+          connection.res.write(`data: ${JSON.stringify(response)}\n\n`);
+        }
+      }
+    }
+    
+    res.json({ success: true, processed: true });
+  } catch (error) {
+    console.error('Error processing MCP POST message:', error);
+    
+    const errorResponse = {
+      jsonrpc: '2.0',
+      id: req.body?.id || null,
+      error: {
+        code: -32603,
+        message: 'Internal error',
+        data: error.message
+      }
+    };
+    
+    // Send error to all active SSE connections
+    for (const [connectionId, connection] of activeConnections) {
+      if (!connection.res.destroyed) {
+        connection.res.write(`data: ${JSON.stringify(errorResponse)}\n\n`);
+      }
+    }
+    
+    res.status(500).json(errorResponse);
+  }
+});
+
+// Alternative message endpoint
 app.post('/message', async (req, res) => {
   try {
     const message = req.body;
-    console.log('Received MCP message:', JSON.stringify(message, null, 2));
+    console.log('Received message:', JSON.stringify(message, null, 2));
     
-    const connectionId = req.headers['x-connection-id'] || Array.from(activeConnections.keys())[0];
-
-    if (!connectionId || !activeConnections.has(connectionId)) {
-      return res.status(404).json({ 
-        error: 'Connection not found',
-        availableConnections: Array.from(activeConnections.keys())
-      });
+    const response = await handleMCPMessage(message);
+    
+    if (response) {
+      res.json(response);
+    } else {
+      res.json({ success: true, message: 'Notification processed' });
     }
-
-    const { mcpHandler } = activeConnections.get(connectionId);
-    await mcpHandler.handleMessage(message);
-
-    res.json({ success: true, connectionId });
   } catch (error) {
     console.error('Error processing message:', error);
-    res.status(500).json({ error: error.message });
+    res.status(500).json({
+      jsonrpc: '2.0',
+      id: req.body?.id || null,
+      error: {
+        code: -32603,
+        message: 'Internal error',
+        data: error.message
+      }
+    });
   }
+});
+
+// Test SSE endpoint
+app.get('/test-sse', (req, res) => {
+  res.send(`
+    <!DOCTYPE html>
+    <html>
+    <head><title>SSE Test</title></head>
+    <body>
+      <h1>SSE Connection Test</h1>
+      <div id="messages"></div>
+      <script>
+        const eventSource = new EventSource('/sse');
+        const messages = document.getElementById('messages');
+        
+        eventSource.onmessage = function(event) {
+          const div = document.createElement('div');
+          div.textContent = new Date().toLocaleTimeString() + ': ' + event.data;
+          messages.appendChild(div);
+        };
+        
+        eventSource.onerror = function(event) {
+          const div = document.createElement('div');
+          div.textContent = 'ERROR: ' + JSON.stringify(event);
+          div.style.color = 'red';
+          messages.appendChild(div);
+        };
+      </script>
+    </body>
+    </html>
+  `);
 });
 
 // Test endpoint
@@ -411,7 +476,7 @@ app.get('/api/test', (req, res) => {
     message: 'API test successful',
     timestamp: new Date().toISOString(),
     port: PORT,
-    endpoints: ['/health', '/sse', '/message', '/api/test'],
+    endpoints: ['/', '/health', '/sse', '/message', '/api/test', '/test-sse'],
     tools: ['generate_image', 'generate_text', 'list_models'],
     activeConnections: activeConnections.size
   });
@@ -431,19 +496,21 @@ app.use((req, res) => {
   res.status(404).json({
     error: 'Not found',
     message: `Endpoint ${req.method} ${req.path} not found`,
-    availableEndpoints: ['/', '/health', '/sse', '/message', '/api/test']
+    availableEndpoints: ['/', '/health', '/sse', '/message', '/api/test', '/test-sse']
   });
 });
 
-// Graceful shutdown handling
+// Graceful shutdown
 let server;
 
 function shutdown() {
   console.log('Shutting down gracefully...');
   
   // Close all active SSE connections
-  for (const [connectionId, { res }] of activeConnections) {
-    res.end();
+  for (const [connectionId, connection] of activeConnections) {
+    if (!connection.res.destroyed) {
+      connection.res.end();
+    }
   }
   
   if (server) {
@@ -469,9 +536,11 @@ server = app.listen(PORT, '0.0.0.0', () => {
   console.log(`📡 Available endpoints:`);
   console.log(`   GET / - Server info`);
   console.log(`   GET /health - Health check`);
-  console.log(`   GET /sse - SSE endpoint for MCP protocol (n8n)`);
-  console.log(`   POST /message - Send MCP messages`);
-  console.log(`   GET /api/test - Test endpoint`);
+  console.log(`   GET /sse - SSE endpoint for n8n MCP Client`);
+  console.log(`   POST /sse - MCP message handler`);
+  console.log(`   POST /message - Alternative message handler`);
+  console.log(`   GET /test-sse - SSE test page`);
+  console.log(`   GET /api/test - API test`);
   console.log(`🎯 Available tools: generate_image, generate_text, list_models`);
   console.log(`🌐 Environment: ${process.env.NODE_ENV || 'development'}`);
 }).on('error', (err) => {
