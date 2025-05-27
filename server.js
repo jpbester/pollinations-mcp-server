@@ -318,7 +318,13 @@ app.get('/health', (req, res) => {
     status: 'healthy',
     timestamp: new Date().toISOString(),
     activeConnections: activeConnections.size,
-    uptime: process.uptime()
+    uptime: process.uptime(),
+    version: '1.0.0',
+    environment: {
+      project: process.env.PROJECT_NAME || 'unknown',
+      service: process.env.SERVICE_NAME || 'unknown',
+      domain: process.env.PRIMARY_DOMAIN || 'unknown'
+    }
   });
 });
 
@@ -344,15 +350,17 @@ app.get('/sse', (req, res) => {
   res.write(`data: ${JSON.stringify({
     type: 'connection',
     connectionId,
-    message: 'Connected to Pollinations MCP Server'
+    message: 'Connected to Pollinations MCP Server',
+    serverInfo: {
+      name: 'pollinations-mcp-server',
+      version: '1.0.0',
+      capabilities: ['image_generation', 'text_generation', 'model_listing']
+    }
   })}\n\n`);
-
-  // Handle incoming messages via POST to /message endpoint
-  // n8n will establish SSE connection here and send messages via separate endpoint
 
   // Keep connection alive
   const keepAlive = setInterval(() => {
-    res.write(`data: ${JSON.stringify({ type: 'ping', timestamp: Date.now() })}\n\n`);
+    res.write(`: keepalive ${Date.now()}\n\n`);
   }, 30000);
 
   // Handle client disconnect
@@ -376,7 +384,10 @@ app.post('/message', async (req, res) => {
     const connectionId = req.headers['x-connection-id'] || Array.from(activeConnections.keys())[0];
 
     if (!connectionId || !activeConnections.has(connectionId)) {
-      return res.status(404).json({ error: 'Connection not found' });
+      return res.status(404).json({ 
+        error: 'Connection not found',
+        availableConnections: Array.from(activeConnections.keys())
+      });
     }
 
     const { mcpHandler } = activeConnections.get(connectionId);
@@ -389,7 +400,7 @@ app.post('/message', async (req, res) => {
   }
 });
 
-// Alternative unified endpoint that handles both SSE and message processing
+// Alternative unified endpoint for different MCP clients
 app.all('/mcp', async (req, res) => {
   if (req.method === 'GET') {
     // Handle SSE connection
@@ -401,7 +412,7 @@ app.all('/mcp', async (req, res) => {
       'Access-Control-Allow-Headers': 'Cache-Control, Authorization'
     });
 
-    const connectionId = Date.now().toString();
+    const connectionId = `mcp-${Date.now()}`;
     logger.info(`MCP SSE connection established: ${connectionId}`);
 
     const mcpHandler = new MCPHandler(connectionId, res);
@@ -436,30 +447,57 @@ app.all('/mcp', async (req, res) => {
     try {
       const message = req.body;
       
-      // For simplicity, use the first available connection
-      // In production, you might want to implement proper connection routing
+      // Use the first available connection or create a temporary handler
       const firstConnection = Array.from(activeConnections.values())[0];
       
       if (!firstConnection) {
         return res.status(404).json({ 
           jsonrpc: '2.0',
           id: message.id,
-          error: { code: -32001, message: 'No active MCP connection' }
+          error: { 
+            code: -32001, 
+            message: 'No active MCP connection',
+            data: 'Please establish SSE connection first'
+          }
         });
       }
 
       await firstConnection.mcpHandler.handleMessage(message);
-      res.json({ success: true });
+      res.json({ success: true, message: 'MCP message processed' });
       
     } catch (error) {
       logger.error('Error processing MCP message:', error);
       res.status(500).json({
         jsonrpc: '2.0',
         id: req.body?.id,
-        error: { code: -32603, message: 'Internal error', data: error.message }
+        error: { 
+          code: -32603, 
+          message: 'Internal error', 
+          data: error.message 
+        }
       });
     }
   }
+});
+
+// Simple API endpoint for testing
+app.get('/api/test', (req, res) => {
+  res.json({
+    message: 'Pollinations MCP Server is running!',
+    endpoints: {
+      health: '/health',
+      sse: '/sse',
+      message: '/message',
+      mcp: '/mcp'
+    },
+    tools: ['generate_image', 'generate_text', 'list_models'],
+    timestamp: new Date().toISOString(),
+    easypanel: {
+      project: process.env.PROJECT_NAME || 'not-set',
+      service: process.env.SERVICE_NAME || 'not-set',
+      domain: process.env.PRIMARY_DOMAIN || 'not-set'
+    }
+  });
 });
 
 // Error handling middleware
@@ -468,6 +506,15 @@ app.use((error, req, res, next) => {
   res.status(500).json({
     error: 'Internal server error',
     message: process.env.NODE_ENV === 'development' ? error.message : 'Something went wrong'
+  });
+});
+
+// 404 handler
+app.use((req, res) => {
+  res.status(404).json({
+    error: 'Not found',
+    message: `Endpoint ${req.method} ${req.path} not found`,
+    availableEndpoints: ['/health', '/sse', '/message', '/mcp', '/api/test']
   });
 });
 
@@ -483,17 +530,23 @@ process.on('SIGINT', () => {
   process.exit(0);
 });
 
+process.on('SIGTERM', () => {
+  logger.info('Received SIGTERM, shutting down gracefully...');
+  
+  // Close all active connections
+  for (const [connectionId, { res }] of activeConnections) {
+    res.end();
+  }
+  
+  process.exit(0);
+});
+
 // Start server
 app.listen(PORT, '0.0.0.0', () => {
-  // Try to detect the public URL from environment variables
-  const publicUrl = process.env.PUBLIC_URL || 
-                   process.env.EASYPANEL_DOMAIN || 
-                   process.env.DOMAIN ||
-                   (process.env.NODE_ENV === 'production' ? 'your-production-domain.com' : `localhost:${PORT}`);
-                   
-  const baseUrl = publicUrl.startsWith('http') ? publicUrl : 
-                  (process.env.NODE_ENV === 'production' ? `https://${publicUrl}` : `http://${publicUrl}`);
-    
+  // Use EasyPanel magic variables for proper URL construction
+  const primaryDomain = process.env.PRIMARY_DOMAIN;
+  const baseUrl = primaryDomain ? `https://${primaryDomain}` : `http://localhost:${PORT}`;
+  
   logger.info(`🚀 Pollinations MCP Server running on port ${PORT}`);
   logger.info('📡 Available endpoints:');
   logger.info('  GET /health - Health check');
@@ -505,10 +558,13 @@ app.listen(PORT, '0.0.0.0', () => {
   logger.info(`🔗 For n8n MCP Client, use: ${baseUrl}/sse`);
   logger.info(`🎯 Available tools: generate_image, generate_text, list_models`);
   
-  // Also log the port info for debugging
+  // Log EasyPanel environment info
   if (process.env.NODE_ENV === 'production') {
-    logger.info(`🌐 Server accessible at: ${baseUrl}`);
-    logger.info(`🔧 Internal port: ${PORT}`);
+    logger.info(`🌐 EasyPanel Info:`);
+    logger.info(`   Project: ${process.env.PROJECT_NAME || 'not-set'}`);
+    logger.info(`   Service: ${process.env.SERVICE_NAME || 'not-set'}`);
+    logger.info(`   Domain: ${process.env.PRIMARY_DOMAIN || 'not-set'}`);
+    logger.info(`   Server accessible at: ${baseUrl}`);
   }
 });
 
