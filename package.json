@@ -1,6 +1,6 @@
 {
   "name": "pollinations-mcp-server",
-  "version": "1.0.0",
+  "version": "1.0.5",
   "description": "Pollinations MCP Server for n8n with SSE support",
   "main": "server.js",
   "scripts": {
@@ -15,7 +15,7 @@
     "sse",
     "ai"
   ],
-  "author": "Your Name",
+  "author": "JP Bester",
   "license": "MIT",
   "dependencies": {
     "express": "^4.18.2",
