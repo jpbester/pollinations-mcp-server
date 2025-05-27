@@ -18,8 +18,9 @@ app.use((req, res, next) => {
   }
 });
 
-// Store active SSE connections
+// Store active connections and their message queues
 const activeConnections = new Map();
+const messageQueue = new Map();
 
 // Pollinations API client
 class PollinationsClient {
@@ -160,109 +161,137 @@ const MCP_TOOLS = [
   }
 ];
 
-// MCP Message Handler
-async function handleMCPMessage(message) {
-  const { id, method, params } = message;
-  
-  console.log(`Processing MCP method: ${method}`);
+// MCP Message Processor
+class MCPProcessor {
+  constructor() {
+    this.initialized = false;
+  }
 
-  switch (method) {
-    case 'initialize':
-      return {
-        jsonrpc: '2.0',
-        id,
-        result: {
-          protocolVersion: '2024-11-05',
-          capabilities: {
-            tools: { listChanged: true },
-            resources: {},
-            prompts: {}
-          },
-          serverInfo: {
-            name: 'pollinations-mcp-server',
-            version: '1.0.0'
-          }
-        }
-      };
+  async processMessage(message, connectionId) {
+    const { id, method, params } = message;
+    
+    console.log(`[${connectionId}] Processing MCP: ${method} (ID: ${id})`);
 
-    case 'notifications/initialized':
-      // No response needed for notifications
-      return null;
-
-    case 'tools/list':
-      return {
-        jsonrpc: '2.0',
-        id,
-        result: {
-          tools: MCP_TOOLS
-        }
-      };
-
-    case 'tools/call':
-      const toolResult = await callTool(params.name, params.arguments || {});
-      return {
-        jsonrpc: '2.0',
-        id,
-        result: {
-          content: [
-            {
-              type: 'text',
-              text: JSON.stringify(toolResult, null, 2)
+    try {
+      switch (method) {
+        case 'initialize':
+          this.initialized = true;
+          return {
+            jsonrpc: '2.0',
+            id,
+            result: {
+              protocolVersion: '2024-11-05',
+              capabilities: {
+                tools: { listChanged: true },
+                resources: {},
+                prompts: {}
+              },
+              serverInfo: {
+                name: 'pollinations-mcp-server',
+                version: '1.0.0'
+              }
             }
-          ]
+          };
+
+        case 'notifications/initialized':
+          console.log(`[${connectionId}] Client initialized notification received`);
+          return null; // No response for notifications
+
+        case 'tools/list':
+          if (!this.initialized) {
+            throw new Error('Server not initialized');
+          }
+          return {
+            jsonrpc: '2.0',
+            id,
+            result: {
+              tools: MCP_TOOLS
+            }
+          };
+
+        case 'tools/call':
+          if (!this.initialized) {
+            throw new Error('Server not initialized');
+          }
+          const toolResult = await this.callTool(params.name, params.arguments || {});
+          return {
+            jsonrpc: '2.0',
+            id,
+            result: {
+              content: [
+                {
+                  type: 'text',
+                  text: JSON.stringify(toolResult, null, 2)
+                }
+              ]
+            }
+          };
+
+        default:
+          throw new Error(`Unsupported method: ${method}`);
+      }
+    } catch (error) {
+      console.error(`[${connectionId}] Error processing ${method}:`, error.message);
+      return {
+        jsonrpc: '2.0',
+        id,
+        error: {
+          code: -32603,
+          message: 'Internal error',
+          data: error.message
         }
       };
-
-    default:
-      throw new Error(`Unsupported method: ${method}`);
+    }
   }
-}
 
-async function callTool(toolName, args) {
-  console.log(`Calling tool: ${toolName}`);
+  async callTool(toolName, args) {
+    console.log(`Calling tool: ${toolName}`);
 
-  switch (toolName) {
-    case 'generate_image':
-      const imageResult = await pollinations.generateImage(args.prompt, {
-        width: args.width,
-        height: args.height,
-        model: args.model,
-        seed: args.seed
-      });
-      return {
-        tool: 'generate_image',
-        result: imageResult,
-        metadata: {
-          prompt: args.prompt,
-          timestamp: new Date().toISOString()
-        }
-      };
-
-    case 'generate_text':
-      const textResult = await pollinations.generateText(args.prompt, args.model);
-      return {
-        tool: 'generate_text',
-        result: textResult,
-        metadata: {
-          prompt: args.prompt,
+    switch (toolName) {
+      case 'generate_image':
+        const imageResult = await pollinations.generateImage(args.prompt, {
+          width: args.width,
+          height: args.height,
           model: args.model,
-          timestamp: new Date().toISOString()
-        }
-      };
+          seed: args.seed
+        });
+        return {
+          tool: 'generate_image',
+          result: imageResult,
+          metadata: {
+            prompt: args.prompt,
+            timestamp: new Date().toISOString()
+          }
+        };
 
-    case 'list_models':
-      return {
-        tool: 'list_models',
-        result: pollinations.getAvailableModels(),
-        metadata: {
-          timestamp: new Date().toISOString()
-        }
-      };
+      case 'generate_text':
+        const textResult = await pollinations.generateText(args.prompt, args.model);
+        return {
+          tool: 'generate_text',
+          result: textResult,
+          metadata: {
+            prompt: args.prompt,
+            model: args.model,
+            timestamp: new Date().toISOString()
+          }
+        };
 
-    default:
-      throw new Error(`Unknown tool: ${toolName}`);
+      case 'list_models':
+        return {
+          tool: 'list_models',
+          result: pollinations.getAvailableModels(),
+          metadata: {
+            timestamp: new Date().toISOString()
+          }
+        };
+
+      default:
+        throw new Error(`Unknown tool: ${toolName}`);
+    }
   }
 }
+
+const mcpProcessor = new MCPProcessor();
 
 // Root endpoint
 app.get('/', (req, res) => {
@@ -274,7 +303,6 @@ app.get('/', (req, res) => {
     endpoints: {
       health: '/health',
       sse: '/sse',
-      message: '/message',
       test: '/api/test'
     },
     tools: ['generate_image', 'generate_text', 'list_models']
@@ -293,9 +321,10 @@ app.get('/health', (req, res) => {
   });
 });
 
-// Fixed SSE endpoint for n8n MCP Client
+// MCP-compliant SSE endpoint
 app.get('/sse', (req, res) => {
-  console.log('SSE connection requested from:', req.ip);
+  const connectionId = `mcp-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+  console.log(`[${connectionId}] New MCP SSE connection from ${req.ip}`);
   
   // Set proper SSE headers
   res.writeHead(200, {
@@ -304,92 +333,120 @@ app.get('/sse', (req, res) => {
     'Connection': 'keep-alive',
     'Access-Control-Allow-Origin': '*',
     'Access-Control-Allow-Headers': 'Cache-Control, Authorization',
-    'X-Accel-Buffering': 'no' // Disable nginx buffering
+    'X-Accel-Buffering': 'no'
   });
 
-  const connectionId = `sse-${Date.now()}`;
-  console.log(`SSE connection established: ${connectionId}`);
-
   // Store connection
-  activeConnections.set(connectionId, { res, connectionId });
+  activeConnections.set(connectionId, {
+    res,
+    connectionId,
+    connected: true,
+    lastPing: Date.now()
+  });
 
-  // Send initial handshake - this is crucial for n8n
-  const initMessage = {
-    jsonrpc: '2.0',
-    method: 'notifications/initialized',
-    params: {
-      serverInfo: {
-        name: 'pollinations-mcp-server',
-        version: '1.0.0'
-      }
-    }
-  };
-  
-  res.write(`data: ${JSON.stringify(initMessage)}\n\n`);
-  
-  // Send tools list immediately after connection
-  const toolsMessage = {
-    jsonrpc: '2.0',
-    id: 'initial-tools',
-    result: {
-      tools: MCP_TOOLS
-    }
-  };
-  
-  res.write(`data: ${JSON.stringify(toolsMessage)}\n\n`);
-  
-  console.log(`Initial messages sent to ${connectionId}`);
+  messageQueue.set(connectionId, []);
 
-  // Keep connection alive with shorter intervals
+  console.log(`[${connectionId}] SSE connection established`);
+
+  // Keep connection alive
   const keepAlive = setInterval(() => {
-    if (!res.destroyed) {
-      res.write(`: keepalive ${Date.now()}\n\n`);
+    const connection = activeConnections.get(connectionId);
+    if (connection && connection.connected && !connection.res.destroyed) {
+      connection.res.write(`: keepalive ${Date.now()}\n\n`);
+      connection.lastPing = Date.now();
     } else {
       clearInterval(keepAlive);
+      activeConnections.delete(connectionId);
+      messageQueue.delete(connectionId);
     }
-  }, 15000); // 15 seconds instead of 30
+  }, 10000); // 10 seconds
 
   // Handle client disconnect
   req.on('close', () => {
-    console.log(`SSE connection closed: ${connectionId}`);
+    console.log(`[${connectionId}] SSE connection closed`);
+    const connection = activeConnections.get(connectionId);
+    if (connection) {
+      connection.connected = false;
+    }
     clearInterval(keepAlive);
     activeConnections.delete(connectionId);
+    messageQueue.delete(connectionId);
   });
 
   req.on('error', (error) => {
-    console.error(`SSE connection error (${connectionId}):`, error);
+    console.error(`[${connectionId}] SSE connection error:`, error);
+    const connection = activeConnections.get(connectionId);
+    if (connection) {
+      connection.connected = false;
+    }
     clearInterval(keepAlive);
     activeConnections.delete(connectionId);
+    messageQueue.delete(connectionId);
   });
 
-  // Handle response errors
   res.on('error', (error) => {
-    console.error(`SSE response error (${connectionId}):`, error);
+    console.error(`[${connectionId}] SSE response error:`, error);
+    const connection = activeConnections.get(connectionId);
+    if (connection) {
+      connection.connected = false;
+    }
     clearInterval(keepAlive);
     activeConnections.delete(connectionId);
+    messageQueue.delete(connectionId);
   });
 });
 
-// Handle MCP messages via POST (for tools that send messages back)
+// Handle MCP messages via POST to /sse
 app.post('/sse', async (req, res) => {
   try {
     const message = req.body;
-    console.log('Received MCP POST message:', JSON.stringify(message, null, 2));
+    const connectionId = req.headers['x-connection-id'] || req.headers['connection-id'];
     
-    const response = await handleMCPMessage(message);
+    console.log(`[${connectionId || 'unknown'}] Received MCP message:`, JSON.stringify(message, null, 2));
+    
+    if (!message.jsonrpc || message.jsonrpc !== '2.0') {
+      return res.status(400).json({
+        jsonrpc: '2.0',
+        id: message.id || null,
+        error: {
+          code: -32600,
+          message: 'Invalid Request - missing or invalid jsonrpc version'
+        }
+      });
+    }
+
+    // Process the message
+    const response = await mcpProcessor.processMessage(message, connectionId || 'direct');
     
     if (response) {
-      // Send response to all active SSE connections
-      for (const [connectionId, connection] of activeConnections) {
-        if (!connection.res.destroyed) {
+      // If we have a specific connection, send to that SSE stream
+      if (connectionId && activeConnections.has(connectionId)) {
+        const connection = activeConnections.get(connectionId);
+        if (connection.connected && !connection.res.destroyed) {
           connection.res.write(`data: ${JSON.stringify(response)}\n\n`);
+          console.log(`[${connectionId}] Response sent via SSE`);
+        }
+      } else {
+        // Send to all active connections (fallback)
+        let sent = false;
+        for (const [connId, connection] of activeConnections) {
+          if (connection.connected && !connection.res.destroyed) {
+            connection.res.write(`data: ${JSON.stringify(response)}\n\n`);
+            sent = true;
+          }
+        }
+        if (sent) {
+          console.log(`Response sent to ${activeConnections.size} SSE connections`);
         }
       }
+      
+      res.json({ success: true, messageId: message.id });
+    } else {
+      res.json({ success: true, messageId: message.id, note: 'Notification processed' });
     }
     
-    res.json({ success: true, processed: true });
   } catch (error) {
-    console.error('Error processing MCP POST message:', error);
+    console.error('Error processing MCP message:', error);
     
     const errorResponse = {
       jsonrpc: '2.0',
@@ -401,32 +458,26 @@ app.post('/sse', async (req, res) => {
       }
     };
     
-    // Send error to all active SSE connections
-    for (const [connectionId, connection] of activeConnections) {
-      if (!connection.res.destroyed) {
-        connection.res.write(`data: ${JSON.stringify(errorResponse)}\n\n`);
-      }
-    }
-    
     res.status(500).json(errorResponse);
   }
 });
 
-// Alternative message endpoint
-app.post('/message', async (req, res) => {
+// Simple HTTP endpoint for direct MCP communication (alternative)
+app.post('/mcp', async (req, res) => {
   try {
     const message = req.body;
-    console.log('Received message:', JSON.stringify(message, null, 2));
+    console.log('Direct MCP message:', JSON.stringify(message, null, 2));
     
-    const response = await handleMCPMessage(message);
+    const response = await mcpProcessor.processMessage(message, 'direct');
     
     if (response) {
       res.json(response);
     } else {
-      res.json({ success: true, message: 'Notification processed' });
+      res.json({ success: true, note: 'Notification processed' });
     }
+    
   } catch (error) {
-    console.error('Error processing message:', error);
+    console.error('Error processing direct MCP message:', error);
     res.status(500).json({
       jsonrpc: '2.0',
       id: req.body?.id || null,
@@ -444,26 +495,103 @@ app.get('/test-sse', (req, res) => {
   res.send(`
     <!DOCTYPE html>
     <html>
-    <head><title>SSE Test</title></head>
+    <head><title>MCP SSE Test</title></head>
     <body>
-      <h1>SSE Connection Test</h1>
-      <div id="messages"></div>
+      <h1>MCP SSE Connection Test</h1>
+      <div>
+        <button onclick="testInitialize()">Test Initialize</button>
+        <button onclick="testToolsList()">Test Tools List</button>
+        <button onclick="testImageGen()">Test Image Generation</button>
+      </div>
+      <div id="messages" style="margin-top: 20px; padding: 10px; border: 1px solid #ccc; height: 400px; overflow-y: scroll;"></div>
+      
       <script>
         const eventSource = new EventSource('/sse');
         const messages = document.getElementById('messages');
         
-        eventSource.onmessage = function(event) {
+        function addMessage(msg, type = 'info') {
           const div = document.createElement('div');
-          div.textContent = new Date().toLocaleTimeString() + ': ' + event.data;
+          div.innerHTML = '<strong>' + new Date().toLocaleTimeString() + '</strong> [' + type + ']: ' + msg;
+          div.style.color = type === 'error' ? 'red' : (type === 'success' ? 'green' : 'black');
           messages.appendChild(div);
+          messages.scrollTop = messages.scrollHeight;
+        }
+        
+        eventSource.onopen = function(event) {
+          addMessage('SSE connection opened', 'success');
+        };
+        
+        eventSource.onmessage = function(event) {
+          addMessage('Received: ' + event.data, 'info');
         };
         
         eventSource.onerror = function(event) {
-          const div = document.createElement('div');
-          div.textContent = 'ERROR: ' + JSON.stringify(event);
-          div.style.color = 'red';
-          messages.appendChild(div);
+          addMessage('SSE Error: ' + JSON.stringify(event), 'error');
         };
+        
+        async function testInitialize() {
+          const message = {
+            jsonrpc: '2.0',
+            id: 1,
+            method: 'initialize',
+            params: {
+              protocolVersion: '2024-11-05',
+              capabilities: {},
+              clientInfo: { name: 'test-client', version: '1.0.0' }
+            }
+          };
+          
+          const response = await fetch('/sse', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(message)
+          });
+          
+          const result = await response.json();
+          addMessage('Initialize response: ' + JSON.stringify(result), 'success');
+        }
+        
+        async function testToolsList() {
+          const message = {
+            jsonrpc: '2.0',
+            id: 2,
+            method: 'tools/list'
+          };
+          
+          const response = await fetch('/sse', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(message)
+          });
+          
+          const result = await response.json();
+          addMessage('Tools list response: ' + JSON.stringify(result), 'success');
+        }
+        
+        async function testImageGen() {
+          const message = {
+            jsonrpc: '2.0',
+            id: 3,
+            method: 'tools/call',
+            params: {
+              name: 'generate_image',
+              arguments: {
+                prompt: 'A beautiful sunset',
+                width: 512,
+                height: 512
+              }
+            }
+          };
+          
+          const response = await fetch('/sse', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(message)
+          });
+          
+          const result = await response.json();
+          addMessage('Image generation response received', 'success');
+        }
       </script>
     </body>
     </html>
@@ -476,9 +604,10 @@ app.get('/api/test', (req, res) => {
     message: 'API test successful',
     timestamp: new Date().toISOString(),
     port: PORT,
-    endpoints: ['/', '/health', '/sse', '/message', '/api/test', '/test-sse'],
+    endpoints: ['/', '/health', '/sse', '/mcp', '/api/test', '/test-sse'],
     tools: ['generate_image', 'generate_text', 'list_models'],
-    activeConnections: activeConnections.size
+    activeConnections: activeConnections.size,
+    mcpInitialized: mcpProcessor.initialized
   });
 });
 
@@ -496,7 +625,7 @@ app.use((req, res) => {
   res.status(404).json({
     error: 'Not found',
     message: `Endpoint ${req.method} ${req.path} not found`,
-    availableEndpoints: ['/', '/health', '/sse', '/message', '/api/test', '/test-sse']
+    availableEndpoints: ['/', '/health', '/sse', '/mcp', '/api/test', '/test-sse']
   });
 });
 
@@ -508,7 +637,7 @@ function shutdown() {
   
   // Close all active SSE connections
   for (const [connectionId, connection] of activeConnections) {
-    if (!connection.res.destroyed) {
+    if (connection.connected && !connection.res.destroyed) {
       connection.res.end();
     }
   }
@@ -533,14 +662,9 @@ process.on('SIGINT', shutdown);
 // Start server
 server = app.listen(PORT, '0.0.0.0', () => {
   console.log(`🚀 Pollinations MCP Server running on port ${PORT}`);
-  console.log(`📡 Available endpoints:`);
-  console.log(`   GET / - Server info`);
-  console.log(`   GET /health - Health check`);
-  console.log(`   GET /sse - SSE endpoint for n8n MCP Client`);
-  console.log(`   POST /sse - MCP message handler`);
-  console.log(`   POST /message - Alternative message handler`);
-  console.log(`   GET /test-sse - SSE test page`);
-  console.log(`   GET /api/test - API test`);
+  console.log(`📡 MCP SSE Endpoint: /sse`);
+  console.log(`📡 Direct MCP Endpoint: /mcp`);
+  console.log(`📡 Test Page: /test-sse`);
   console.log(`🎯 Available tools: generate_image, generate_text, list_models`);
   console.log(`🌐 Environment: ${process.env.NODE_ENV || 'development'}`);
 }).on('error', (err) => {
