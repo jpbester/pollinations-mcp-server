@@ -6,8 +6,8 @@ WORKDIR /app
 # Copy package files
 COPY package*.json ./
 
-# Install dependencies
-RUN npm ci --only=production
+# Install dependencies (changed from npm ci to npm install)
+RUN npm install --only=production
 
 # Copy application files
 COPY server.js ./
@@ -20,12 +20,12 @@ RUN addgroup -g 1001 -S nodejs && \
 RUN chown -R nodejs:nodejs /app
 USER nodejs
 
-# Expose port
-EXPOSE 3000
+# Expose port (dynamic based on environment variable)
+EXPOSE ${PORT:-3000}
 
-# Health check
+# Health check (uses PORT environment variable or defaults to 3000)
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
-    CMD wget --no-verbose --tries=1 --spider http://localhost:3000/health || exit 1
+    CMD node -e "const port = process.env.PORT || 3000; require('http').get(\`http://localhost:\${port}/health\`, (res) => process.exit(res.statusCode === 200 ? 0 : 1)).on('error', () => process.exit(1))"
 
 # Start application
 CMD ["npm", "start"]
