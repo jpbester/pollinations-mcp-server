@@ -1,33 +1,16 @@
 {
   "name": "pollinations-mcp-server",
-  "version": "1.0.5",
-  "description": "Pollinations MCP Server for n8n with SSE support",
+  "version": "1.0.6",
+  "description": "Pollinations MCP Server for n8n",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "dev": "nodemon server.js"
+    "dev": "node server.js"
   },
-  "keywords": [
-    "mcp",
-    "model-context-protocol",
-    "pollinations",
-    "n8n",
-    "sse",
-    "ai"
-  ],
-  "author": "JP Bester",
-  "license": "MIT",
   "dependencies": {
-    "express": "^4.18.2",
-    "cors": "^2.8.5",
-    "helmet": "^7.1.0",
-    "winston": "^3.11.0",
-    "axios": "^1.6.0"
-  },
-  "devDependencies": {
-    "nodemon": "^3.0.2"
+    "express": "^4.18.2"
   },
   "engines": {
-    "node": ">=18.0.0"
+    "node": "18.x"
   }
 }
