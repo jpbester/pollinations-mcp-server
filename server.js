@@ -485,14 +485,31 @@ process.on('SIGINT', () => {
 
 // Start server
 app.listen(PORT, '0.0.0.0', () => {
-  logger.info(`Pollinations MCP Server running on port ${PORT}`);
-  logger.info('Available endpoints:');
+  // Try to detect the public URL from environment variables
+  const publicUrl = process.env.PUBLIC_URL || 
+                   process.env.EASYPANEL_DOMAIN || 
+                   process.env.DOMAIN ||
+                   (process.env.NODE_ENV === 'production' ? 'your-production-domain.com' : `localhost:${PORT}`);
+                   
+  const baseUrl = publicUrl.startsWith('http') ? publicUrl : 
+                  (process.env.NODE_ENV === 'production' ? `https://${publicUrl}` : `http://${publicUrl}`);
+    
+  logger.info(`🚀 Pollinations MCP Server running on port ${PORT}`);
+  logger.info('📡 Available endpoints:');
   logger.info('  GET /health - Health check');
-  logger.info('  GET /sse - SSE endpoint for MCP protocol');
+  logger.info('  GET /sse - SSE endpoint for MCP protocol (n8n)');
   logger.info('  POST /message - Send MCP messages');
   logger.info('  GET|POST /mcp - Unified MCP endpoint');
+  logger.info('  GET /api/test - Test endpoint');
   logger.info('');
-  logger.info('For n8n MCP Client, use: http://localhost:3000/sse');
+  logger.info(`🔗 For n8n MCP Client, use: ${baseUrl}/sse`);
+  logger.info(`🎯 Available tools: generate_image, generate_text, list_models`);
+  
+  // Also log the port info for debugging
+  if (process.env.NODE_ENV === 'production') {
+    logger.info(`🌐 Server accessible at: ${baseUrl}`);
+    logger.info(`🔧 Internal port: ${PORT}`);
+  }
 });
 
 module.exports = app;
