@@ -31,16 +31,52 @@ A **Model Context Protocol (MCP)** server that connects AI agents to [Pollinatio
 
 ### 🐳 Docker (Recommended)
 
-```bash
-# Run with Docker
-docker run -p 3000:3000 ghcr.io/jpbester/pollinations-mcp-server
+This is the easiest way to get the server running.
 
-# Or build locally
+**Option 1: Run a pre-built image (if available)**
+If a pre-built image is provided by the maintainers (e.g., on GitHub Container Registry):
+```bash
+# Replace with the actual image path if provided
+docker run -p 3000:3000 --name pollinations-mcp-server-container ghcr.io/jpbester/pollinations-mcp-server
+```
+
+**Option 2: Build and run locally**
+```bash
+# 1. Clone the repository (if you haven't already)
 git clone https://github.com/jpbester/pollinations-mcp-server.git
 cd pollinations-mcp-server
-docker build -t pollinations-mcp .
-docker run -p 3000:3000 pollinations-mcp
+
+# 2. Build the Docker image
+# This creates an image named 'pollinations-mcp-server'
+docker build -t pollinations-mcp-server .
+
+# 3. Run the Docker container
+# This starts the server and maps port 3000 on your machine to port 3000 in the container.
+docker run -p 3000:3000 --name pollinations-mcp-server-container pollinations-mcp-server
 ```
+
+**Accessing the server:**
+Once running, the server will be available at `http://localhost:3000`.
+- Test page: `http://localhost:3000/test-sse`
+- SSE endpoint: `http://localhost:3000/sse`
+
+**Useful Docker commands:**
+- To run in detached (background) mode, add the `-d` flag to `docker run`:
+  ```bash
+  docker run -d -p 3000:3000 --name pollinations-mcp-server-container pollinations-mcp-server
+  ```
+- To view logs (especially if running detached):
+  ```bash
+  docker logs pollinations-mcp-server-container
+  ```
+- To stop the container:
+  ```bash
+  docker stop pollinations-mcp-server-container
+  ```
+- To remove the container (after stopping):
+  ```bash
+  docker rm pollinations-mcp-server-container
+  ```
 
 ### 📦 Local Development
 
@@ -377,8 +413,8 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 ## 📞 Support
 
 - **Documentation**: Check this README and inline code comments
-- **Issues**: [GitHub Issues](https://github.com/your-username/pollinations-mcp-server/issues)
-- **Discussions**: [GitHub Discussions](https://github.com/your-username/pollinations-mcp-server/discussions)
+- **Issues**: [GitHub Issues](https://github.com/jpbester/pollinations-mcp-server/issues)
+- **Discussions**: [GitHub Discussions](https://github.com/jpbester/pollinations-mcp-server/discussions)
 
 ---
 
