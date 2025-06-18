@@ -33,10 +33,10 @@ A **Model Context Protocol (MCP)** server that connects AI agents to [Pollinatio
 
 ```bash
 # Run with Docker
-docker run -p 3000:3000 ghcr.io/your-username/pollinations-mcp-server
+docker run -p 3000:3000 ghcr.io/jpbester/pollinations-mcp-server
 
 # Or build locally
-git clone https://github.com/your-username/pollinations-mcp-server.git
+git clone https://github.com/jpbester/pollinations-mcp-server.git
 cd pollinations-mcp-server
 docker build -t pollinations-mcp .
 docker run -p 3000:3000 pollinations-mcp
@@ -46,7 +46,7 @@ docker run -p 3000:3000 pollinations-mcp
 
 ```bash
 # Clone the repository
-git clone https://github.com/your-username/pollinations-mcp-server.git
+git clone https://github.com/jpbester/pollinations-mcp-server.git
 cd pollinations-mcp-server
 
 # Install dependencies
@@ -318,7 +318,7 @@ We welcome contributions! Here's how to get started:
 
 ### Development Setup
 ```bash
-git clone https://github.com/your-username/pollinations-mcp-server.git
+git clone https://github.com/jpbester/pollinations-mcp-server.git
 cd pollinations-mcp-server
 npm install
 npm run dev
