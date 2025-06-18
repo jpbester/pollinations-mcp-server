@@ -18,9 +18,8 @@ app.use((req, res, next) => {
   }
 });
 
-// Store active connections and their message queues
+// Store active connections
 const activeConnections = new Map();
-const messageQueue = new Map();
 
 // Pollinations API client
 class PollinationsClient {
@@ -43,12 +42,12 @@ class PollinationsClient {
 
       const imageUrl = `${this.imageBaseUrl}/${encodeURIComponent(prompt)}?${params}`;
       console.log(`Generating image: ${prompt.substring(0, 50)}...`);
-      
-      const response = await axios.get(imageUrl, { 
+
+      const response = await axios.get(imageUrl, {
         responseType: 'arraybuffer',
-        timeout: 30000 
+        timeout: 30000
       });
-      
+
       const base64 = Buffer.from(response.data).toString('base64');
       return {
         success: true,
@@ -65,7 +64,7 @@ class PollinationsClient {
   async generateText(prompt, model = 'openai') {
     try {
       console.log(`Generating text with ${model}: ${prompt.substring(0, 50)}...`);
-      
+
       const response = await axios.post(`${this.textBaseUrl}/${model}`, {
         messages: [{ role: 'user', content: prompt }],
         jsonMode: false
@@ -73,7 +72,7 @@ class PollinationsClient {
         timeout: 30000,
         headers: { 'Content-Type': 'application/json' }
       });
-      
+
       return {
         success: true,
         content: response.data
@@ -112,7 +111,7 @@ const MCP_TOOLS = [
           default: 1024
         },
         height: {
-          type: 'number', 
+          type: 'number',
           description: 'Image height in pixels (default: 1024)',
           default: 1024
         },
@@ -169,7 +168,7 @@ class MCPProcessor {
 
   async processMessage(message, connectionId) {
     const { id, method, params } = message;
-    
+
     console.log(`[${connectionId}] Processing MCP: ${method} (ID: ${id})`);
 
     try {
@@ -189,6 +188,7 @@ class MCPProcessor {
               serverInfo: {
                 name: 'pollinations-mcp-server',
                 version: '1.0.0'
+                // Note: We are not adding connectionId here, it's sent via a separate system event
               }
             }
           };
@@ -325,8 +325,7 @@ app.get('/health', (req, res) => {
 app.get('/sse', (req, res) => {
   const connectionId = `mcp-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
   console.log(`[${connectionId}] New MCP SSE connection from ${req.ip}`);
-  
-  // Set proper SSE headers
+
   res.writeHead(200, {
     'Content-Type': 'text/event-stream',
     'Cache-Control': 'no-cache',
@@ -336,19 +335,22 @@ app.get('/sse', (req, res) => {
     'X-Accel-Buffering': 'no'
   });
 
-  // Store connection
-  activeConnections.set(connectionId, {
+  const newConnection = {
     res,
     connectionId,
     connected: true,
     lastPing: Date.now()
-  });
-
-  messageQueue.set(connectionId, []);
+  };
+  activeConnections.set(connectionId, newConnection);
 
   console.log(`[${connectionId}] SSE connection established`);
 
-  // Keep connection alive
+  // Send connection_ready event to the client
+  if (newConnection.connected && !newConnection.res.destroyed) {
+    newConnection.res.write(`event: system\ndata: ${JSON.stringify({ type: "connection_ready", connectionId })}\n\n`);
+    console.log(`[${connectionId}] Sent connection_ready event.`);
+  }
+
   const keepAlive = setInterval(() => {
     const connection = activeConnections.get(connectionId);
     if (connection && connection.connected && !connection.res.destroyed) {
@@ -357,11 +359,9 @@ app.get('/sse', (req, res) => {
     } else {
       clearInterval(keepAlive);
       activeConnections.delete(connectionId);
-      messageQueue.delete(connectionId);
     }
-  }, 10000); // 10 seconds
+  }, 10000);
 
-  // Handle client disconnect
   req.on('close', () => {
     console.log(`[${connectionId}] SSE connection closed`);
     const connection = activeConnections.get(connectionId);
@@ -370,7 +370,6 @@ app.get('/sse', (req, res) => {
     }
     clearInterval(keepAlive);
     activeConnections.delete(connectionId);
-    messageQueue.delete(connectionId);
   });
 
   req.on('error', (error) => {
@@ -381,7 +380,6 @@ app.get('/sse', (req, res) => {
     }
     clearInterval(keepAlive);
     activeConnections.delete(connectionId);
-    messageQueue.delete(connectionId);
   });
 
   res.on('error', (error) => {
@@ -392,7 +390,6 @@ app.get('/sse', (req, res) => {
     }
     clearInterval(keepAlive);
     activeConnections.delete(connectionId);
-    messageQueue.delete(connectionId);
   });
 });
 
@@ -400,65 +397,96 @@ app.get('/sse', (req, res) => {
 app.post('/sse', async (req, res) => {
   try {
     const message = req.body;
-    const connectionId = req.headers['x-connection-id'] || req.headers['connection-id'];
-    
-    console.log(`[${connectionId || 'unknown'}] Received MCP message:`, JSON.stringify(message, null, 2));
-    
-    if (!message.jsonrpc || message.jsonrpc !== '2.0') {
+    const connectionId = req.headers['x-connection-id']; // Use specific header
+
+    console.log(`[${connectionId || 'unknown'}] Received MCP POST to /sse:`, JSON.stringify(message, null, 2));
+
+    if (!message || !message.jsonrpc || message.jsonrpc !== '2.0') {
       return res.status(400).json({
         jsonrpc: '2.0',
-        id: message.id || null,
+        id: message?.id || null,
         error: {
           code: -32600,
-          message: 'Invalid Request - missing or invalid jsonrpc version'
+          message: 'Invalid Request - missing or invalid jsonrpc version or malformed message body'
         }
       });
     }
 
-    // Process the message
-    const response = await mcpProcessor.processMessage(message, connectionId || 'direct');
-    
-    if (response) {
-      // If we have a specific connection, send to that SSE stream
-      if (connectionId && activeConnections.has(connectionId)) {
-        const connection = activeConnections.get(connectionId);
-        if (connection.connected && !connection.res.destroyed) {
-          connection.res.write(`data: ${JSON.stringify(response)}\n\n`);
-          console.log(`[${connectionId}] Response sent via SSE`);
+    const sseBoundMethods = ['initialize', 'tools/list', 'tools/call'];
+    const requiresSseDelivery = sseBoundMethods.includes(message.method);
+
+    if (requiresSseDelivery) {
+      if (!connectionId) {
+        return res.status(400).json({
+          jsonrpc: '2.0',
+          id: message.id || null,
+          error: {
+            code: -32001,
+            message: 'Missing X-Connection-ID for SSE-bound request.'
+          }
+        });
+      }
+      if (!activeConnections.has(connectionId)) {
+        // This specific connection ID is not active
+        return res.status(400).json({
+          jsonrpc: '2.0',
+          id: message.id || null,
+          error: {
+            code: -32001,
+            message: `Invalid X-Connection-ID: No active SSE connection found for ID '${connectionId}'.`
+          }
+        });
+      }
+    }
+
+    const processorConnectionContext = connectionId || `http-post-${message.method || 'unknown'}-${Date.now()}`;
+    const responseFromProcessor = await mcpProcessor.processMessage(message, processorConnectionContext);
+
+    if (responseFromProcessor) {
+      const connection = activeConnections.get(connectionId);
+
+      if (requiresSseDelivery && connection && connection.connected && !connection.res.destroyed) {
+        res.status(202).json({
+          jsonrpc: "2.0",
+          id: message.id || null,
+          result: { status: "received", messageId: message.id || null }
+        });
+        connection.res.write(`event: mcp\ndata: ${JSON.stringify(responseFromProcessor)}\n\n`);
+        console.log(`[${connectionId}] MCP response for ${message.method} (ID: ${message.id}) sent via SSE.`);
+      } else if (requiresSseDelivery) {
+        console.error(`[${connectionId}] SSE connection for ${message.method} (ID: ${message.id}) lost or invalid before message dispatch.`);
+        if (!res.headersSent) {
+            res.status(500).json({
+                jsonrpc: '2.0',
+                id: message.id || null,
+                error: { code: -32002, message: 'SSE connection lost before message could be sent over stream.'}
+            });
         }
       } else {
-        // Send to all active connections (fallback)
-        let sent = false;
-        for (const [connId, connection] of activeConnections) {
-          if (connection.connected && !connection.res.destroyed) {
-            connection.res.write(`data: ${JSON.stringify(response)}\n\n`);
-            sent = true;
-          }
-        }
-        if (sent) {
-          console.log(`Response sent to ${activeConnections.size} SSE connections`);
-        }
+        console.warn(`[${processorConnectionContext}] Response for ${message.method} (ID: ${message.id}) will be sent via HTTP body as it's not an SSE-exclusive method or no valid SSE target.`);
+        res.json(responseFromProcessor);
       }
-      
-      res.json({ success: true, messageId: message.id });
     } else {
-      res.json({ success: true, messageId: message.id, note: 'Notification processed' });
+      console.log(`[${processorConnectionContext}] Processed notification: ${message.method} (ID: ${message.id}). Sending 204 No Content.`);
+      res.status(204).send();
     }
-    
+
   } catch (error) {
-    console.error('Error processing MCP message:', error);
-    
-    const errorResponse = {
-      jsonrpc: '2.0',
-      id: req.body?.id || null,
-      error: {
-        code: -32603,
-        message: 'Internal error',
-        data: error.message
-      }
-    };
-    
-    res.status(500).json(errorResponse);
+    const messageId = req.body?.id || null;
+    const method = req.body?.method || 'unknown method';
+    console.error(`[${req.headers['x-connection-id'] || 'unknown'}] Error processing MCP POST for ${method} (ID: ${messageId}):`, error);
+
+    if (!res.headersSent) {
+      res.status(500).json({
+        jsonrpc: '2.0',
+        id: messageId,
+        error: {
+          code: -32603,
+          message: 'Internal server error during POST /sse processing.',
+          data: process.env.NODE_ENV === 'development' ? error.message : undefined
+        }
+      });
+    }
   }
 });
 
@@ -467,15 +495,15 @@ app.post('/mcp', async (req, res) => {
   try {
     const message = req.body;
     console.log('Direct MCP message:', JSON.stringify(message, null, 2));
-    
+
     const response = await mcpProcessor.processMessage(message, 'direct');
-    
+
     if (response) {
       res.json(response);
     } else {
-      res.json({ success: true, note: 'Notification processed' });
+      res.json({ success: true, messageId: message.id, note: 'Notification processed or no direct response required.' });
     }
-    
+
   } catch (error) {
     console.error('Error processing direct MCP message:', error);
     res.status(500).json({
@@ -495,102 +523,174 @@ app.get('/test-sse', (req, res) => {
   res.send(`
     <!DOCTYPE html>
     <html>
-    <head><title>MCP SSE Test</title></head>
+    <head>
+      <title>MCP SSE Test</title>
+      <style>
+        #messages div { margin-bottom: 5px; padding-bottom: 5px; border-bottom: 1px solid #eee; }
+        #messages strong { margin-right: 5px; }
+      </style>
+    </head>
     <body>
       <h1>MCP SSE Connection Test</h1>
+      <p>Status: <span id="status">Connecting...</span> | Connection ID: <span id="connectionIdDisplay">N/A</span></p>
       <div>
         <button onclick="testInitialize()">Test Initialize</button>
         <button onclick="testToolsList()">Test Tools List</button>
         <button onclick="testImageGen()">Test Image Generation</button>
       </div>
-      <div id="messages" style="margin-top: 20px; padding: 10px; border: 1px solid #ccc; height: 400px; overflow-y: scroll;"></div>
-      
+      <div id="messages" style="margin-top: 20px; padding: 10px; border: 1px solid #ccc; height: 400px; overflow-y: scroll; font-family: monospace; font-size: 0.9em;"></div>
+
       <script>
+        let connectionId = null; // Renamed from sseConnectionId
+        const messagesDiv = document.getElementById('messages');
+        const statusSpan = document.getElementById('status');
+        const connectionIdDisplaySpan = document.getElementById('connectionIdDisplay');
+
         const eventSource = new EventSource('/sse');
-        const messages = document.getElementById('messages');
-        
-        function addMessage(msg, type = 'info') {
+
+        function addMessage(msg, type = 'info') { // type can be 'info', 'error', 'success', 'system', 'mcp', 'system-warn', 'http-ack'
           const div = document.createElement('div');
-          div.innerHTML = '<strong>' + new Date().toLocaleTimeString() + '</strong> [' + type + ']: ' + msg;
-          div.style.color = type === 'error' ? 'red' : (type === 'success' ? 'green' : 'black');
-          messages.appendChild(div);
-          messages.scrollTop = messages.scrollHeight;
+          let color = 'black';
+          let typeDisplay = type.toUpperCase();
+
+          switch (type) {
+            case 'error': color = 'red'; break;
+            case 'success': color = 'green'; break;
+            case 'system': color = 'blue'; break;
+            case 'system-warn': color = 'orange'; typeDisplay = 'SYSTEM-WARN'; break;
+            case 'mcp': color = 'purple'; break;
+            case 'http-ack': color = 'DarkCyan'; typeDisplay = 'HTTP-ACK'; break;
+            default: typeDisplay = 'INFO'; break;
+          }
+          // Sanitize msg to prevent HTML injection if it contains user input or unexpected chars
+          const textNode = document.createTextNode(msg);
+          const strong = document.createElement('strong');
+          strong.textContent = new Date().toLocaleTimeString() + ' [' + typeDisplay + ']: ';
+
+          div.appendChild(strong);
+          div.appendChild(textNode);
+          div.style.color = color;
+          messagesDiv.appendChild(div);
+          messagesDiv.scrollTop = messagesDiv.scrollHeight;
         }
-        
+
         eventSource.onopen = function(event) {
-          addMessage('SSE connection opened', 'success');
+          statusSpan.textContent = 'SSE Connection Opened';
+          addMessage('SSE connection stream opened.', 'success');
         };
-        
-        eventSource.onmessage = function(event) {
-          addMessage('Received: ' + event.data, 'info');
-        };
-        
-        eventSource.onerror = function(event) {
-          addMessage('SSE Error: ' + JSON.stringify(event), 'error');
-        };
-        
-        async function testInitialize() {
-          const message = {
-            jsonrpc: '2.0',
-            id: 1,
-            method: 'initialize',
-            params: {
-              protocolVersion: '2024-11-05',
-              capabilities: {},
-              clientInfo: { name: 'test-client', version: '1.0.0' }
+
+        eventSource.addEventListener('system', function(event) {
+          try {
+              const parsedData = JSON.parse(event.data);
+              if (parsedData.type === 'connection_ready' && parsedData.connectionId) {
+                  connectionId = parsedData.connectionId;
+                  statusSpan.textContent = 'Connected';
+                  connectionIdDisplaySpan.textContent = connectionId;
+                  addMessage('Successfully connected with ID: ' + connectionId, 'system');
+              } else {
+                  addMessage('Received System Event: ' + event.data, 'system');
+              }
+          } catch (e) {
+              addMessage('Received non-JSON system event: ' + event.data, 'system-warn');
+          }
+        });
+
+        eventSource.addEventListener('mcp', function(event) {
+            addMessage('Received MCP Event: ' + event.data, 'mcp');
+        });
+
+        eventSource.onmessage = function(event) { // Generic message handler for non-typed events
+            // This will catch the : keepalive messages if not handled otherwise.
+            if (event.data && event.data.startsWith(': keepalive')) {
+                 addMessage('Keepalive ping.', 'info');
+            } else {
+                 addMessage('Received Generic SSE: ' + event.data, 'info');
             }
+        };
+
+        eventSource.onerror = function(event) {
+          statusSpan.textContent = 'Error / Closed';
+          connectionIdDisplaySpan.textContent = 'N/A';
+          addMessage('SSE Error: ' + (event.message || 'Connection failed or closed.'), 'error');
+          console.error("SSE Error Details:", event);
+        };
+
+        async function postSseMessage(message) {
+          if (!connectionId) {
+            addMessage('Error: SSE Connection ID not yet captured. Cannot send request. Wait for "SYSTEM: Successfully connected" message.', 'error');
+            return;
+          }
+
+          const headers = {
+            'Content-Type': 'application/json',
+            'X-Connection-ID': connectionId
           };
-          
-          const response = await fetch('/sse', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(message)
-          });
-          
-          const result = await response.json();
-          addMessage('Initialize response: ' + JSON.stringify(result), 'success');
+
+          addMessage(\`Sending POST to /sse (X-Connection-ID: \${connectionId}): \${JSON.stringify(message)}\`, 'info');
+
+          try {
+            const response = await fetch('/sse', {
+              method: 'POST',
+              headers: headers,
+              body: JSON.stringify(message)
+            });
+
+            const responseText = await response.text();
+            let resultJson;
+            try {
+              resultJson = JSON.parse(responseText);
+            } catch (e) {
+              resultJson = { error: "Failed to parse response as JSON", data: responseText, status: response.status };
+            }
+
+            if (response.ok) {
+              let messageType = 'info';
+              let messagePrefix = (message.method || 'Request');
+              if (response.status === 202) {
+                  messageType = 'http-ack';
+                  addMessage(\`\${messagePrefix} HTTP \${response.status} Ack: \${JSON.stringify(resultJson)}. Actual result expected via SSE.\`, messageType);
+              } else if (response.status === 204) {
+                  messageType = 'success';
+                  addMessage(\`\${messagePrefix} HTTP \${response.status} Success (No Content).\`, messageType);
+              } else {
+                  addMessage(\`\${messagePrefix} HTTP \${response.status} Response: \${JSON.stringify(resultJson)}\`, messageType);
+              }
+            } else {
+              addMessage((message.method || 'Request') + ' HTTP error ' + response.status + ': ' + JSON.stringify(resultJson), 'error');
+            }
+          } catch (fetchError) {
+              addMessage('Fetch API error when posting to /sse: ' + fetchError.message, 'error');
+              console.error('Fetch error:', fetchError);
+          }
         }
-        
+
+        async function testInitialize() {
+          await postSseMessage({
+            jsonrpc: '2.0',
+            id: "init-" + Date.now(),
+            method: 'initialize',
+            params: { clientName: 'TestClient/1.0' }
+          });
+        }
+
         async function testToolsList() {
-          const message = {
+          await postSseMessage({
             jsonrpc: '2.0',
-            id: 2,
+            id: "toolslist-" + Date.now(),
             method: 'tools/list'
-          };
-          
-          const response = await fetch('/sse', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(message)
           });
-          
-          const result = await response.json();
-          addMessage('Tools list response: ' + JSON.stringify(result), 'success');
         }
-        
+
         async function testImageGen() {
-          const message = {
+          await postSseMessage({
             jsonrpc: '2.0',
-            id: 3,
+            id: "toolscall-img-" + Date.now(),
             method: 'tools/call',
             params: {
               name: 'generate_image',
-              arguments: {
-                prompt: 'A beautiful sunset',
-                width: 512,
-                height: 512
-              }
+              arguments: { prompt: 'A colorful bird on a branch', width: 512, height: 512 }
             }
-          };
-          
-          const response = await fetch('/sse', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(message)
           });
-          
-          const result = await response.json();
-          addMessage('Image generation response received', 'success');
         }
       </script>
     </body>
@@ -634,14 +734,13 @@ let server;
 
 function shutdown() {
   console.log('Shutting down gracefully...');
-  
-  // Close all active SSE connections
+
   for (const [connectionId, connection] of activeConnections) {
     if (connection.connected && !connection.res.destroyed) {
       connection.res.end();
     }
   }
-  
+
   if (server) {
     server.close((err) => {
       if (err) {
