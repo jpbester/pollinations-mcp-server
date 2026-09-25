@@ -1,5 +1,8 @@
 # 🎨 Pollinations MCP Server
 
+> [!WARNING]
+> **This project is retired and no longer maintained.** Pollinations now publishes an official MCP server, [`@pollinations_ai/mcp`](https://www.npmjs.com/package/@pollinations_ai/mcp), which supports images, video, text and audio. Please use that one instead. This repo is kept read-only for reference.
+
 A **Model Context Protocol (MCP)** server that connects AI agents to [Pollinations.ai](https://pollinations.ai) for seamless image and text generation. Designed specifically for **n8n** workflows with Server-Sent Events (SSE) support.
 
 [![Docker](https://img.shields.io/badge/Docker-Ready-blue?logo=docker)](https://docker.com)
